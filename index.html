@@ -1,0 +1,1378 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Christmas Tree - Hand Control (Improved)</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      overflow: hidden;
+      background: black;
+      font-family: Arial, sans-serif;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    #video {
+      display: none;
+    }
+
+    .debug {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      color: white;
+      font-size: 24px;
+      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .fps {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      color: lime;
+      font-size: 20px;
+      font-weight: bold;
+      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+      pointer-events: none;
+      z-index: 10;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 10px;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="loading" style="
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #0a0e27 0%, #1a0a2e 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    transition: opacity 0.5s ease;
+  ">
+    <div style="text-align: center;">
+      <div style="
+        font-size: 60px;
+        margin-bottom: 20px;
+        animation: bounce 1s infinite;
+      ">🎄</div>
+      <h1 style="
+        color: white;
+        font-size: 32px;
+        margin-bottom: 20px;
+        text-shadow: 0 0 20px rgba(255,215,0,0.5);
+      ">Đang tải...</h1>
+      <div style="
+        width: 300px;
+        height: 8px;
+        background: rgba(255,255,255,0.2);
+        border-radius: 10px;
+        overflow: hidden;
+        margin-bottom: 15px;
+      ">
+        <div id="progress-bar" style="
+          width: 0%;
+          height: 100%;
+          background: linear-gradient(90deg, #ffd700, #ff6b6b);
+          transition: width 0.3s ease;
+          box-shadow: 0 0 10px rgba(255,215,0,0.8);
+        "></div>
+      </div>
+      <p id="loading-text" style="
+        color: rgba(255,255,255,0.7);
+        font-size: 16px;
+      ">Đang khởi tạo...</p>
+    </div>
+  </div>
+
+  <canvas id="canvas" style="opacity: 0; transition: opacity 0.5s ease;"></canvas>
+  <video id="video"></video>
+  <div class="debug" id="debug"></div>
+
+  <style>
+    @keyframes bounce {
+      0%, 100% {
+        transform: translateY(0);
+      }
+      50% {
+        transform: translateY(-20px);
+      }
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d", { alpha: false });
+    const video = document.getElementById("video");
+    const debug = document.getElementById("debug");
+    const loadingText = document.getElementById("loading-text");
+
+    // ============ CẤU HÌNH ============
+    const PARTICLE_COUNT = 1200;
+    const SNOWFLAKE_COUNT = 100;
+    const IMAGE_COUNT = 10;
+    const ZOOM_SIZE = 500;
+    const SMOOTH_FACTOR = 0.2;
+    const TRANSITION_SPEED = 0.05;
+
+    const IMAGE_SIZE_TREE = 10;
+    const IMAGE_SIZE_SCATTER = 40;
+    const IMAGE_SIZE_HEART = 10;
+
+    const LEAF_CACHE = [];
+    const LEAF_VARIANTS = 8;
+    const LEAF_CANVAS_SIZE = 30;
+    const HEART_SCALE = 0.32;
+
+    // KIM TUYẾN CONFIG
+    const TINSEL_POINTS = 250;
+    const TINSEL_SPIRALS = 1;
+    const TINSEL_WIDTH = 3;
+    const TINSEL_REVEAL_SPEED = 0.015; // Tốc độ hiện kim tuyến từ trên xuống
+
+    // ============ GRADIENT CACHE ============
+    const gradientCache = new Map();
+
+    function getCachedGradient(key, createFn) {
+      if (!gradientCache.has(key)) {
+        gradientCache.set(key, createFn());
+      }
+      return gradientCache.get(key);
+    }
+
+    const loadSteps = {
+      images: 0,
+      mediapipe: 0,
+      camera: 0,
+      cache: 0
+    };
+
+    function updateLoadProgress() {
+      const total = 4;
+      const done = Object.values(loadSteps).reduce((a, b) => a + b, 0);
+      const percent = Math.round((done / total) * 100);
+      document.getElementById("progress-bar").style.width = percent + "%";
+
+      if (percent === 100) {
+        document.getElementById("loading").style.opacity = 0;
+        setTimeout(() => {
+          document.getElementById("loading").style.display = "none";
+          canvas.style.opacity = 1;
+        }, 500);
+      }
+    }
+
+    // ============ TRẠNG THÁI ============
+    let particles = [];
+    let snowflakes = [];
+    let decorationImages = [];
+    let tinselPoints = [];
+
+    let currentMode = "tree";
+    let rotateY = 0;
+    let rotateX = 0;
+    let smoothHandPos = null;
+    let hoveredImage = null;
+    let lastHandPos = null;
+    let autoRotateAngle = 0;
+    let heartBeatPhase = 0;
+    let isHeartMode = false;
+    let flowerCacheCanvas = null;
+    let tinselAnimOffset = 0;
+    let tinselRevealProgress = 0; // 0 -> 1 (từ trên xuống)
+    let isTransitioningToTree = false;
+    let treeFormationProgress = 0; // 0 -> 1 (theo dõi particles đã gộp chưa)
+    let tinselCanStart = false; // Flag cho phép kim tuyến bắt đầu vẽ
+
+    const offscreenCanvas = document.createElement('canvas');
+    const offscreenCtx = offscreenCanvas.getContext('2d', { alpha: false });
+
+    // ============ KHỞI TẠO ============
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      offscreenCanvas.width = canvas.width;
+      offscreenCanvas.height = canvas.height;
+      gradientCache.clear();
+      initTinselPoints();
+    }
+    resize();
+    window.addEventListener("resize", resize);
+
+    // ============ PRELOAD IMAGES ============
+    let imagesLoaded = 0;
+    loadingText.textContent = 'Đang tải hình ảnh...';
+
+    for (let i = 0; i < IMAGE_COUNT; i++) {
+      const img = new Image();
+      img.src = `images/deco${i + 1}.jpg`;
+
+      img.onload = () => {
+        imagesLoaded++;
+        if (imagesLoaded === IMAGE_COUNT) {
+          loadSteps.images = 1;
+          updateLoadProgress();
+        }
+      };
+
+      img.onerror = () => {
+        console.warn(`❌ Không tải được: ${img.src}`);
+        imagesLoaded++;
+        if (imagesLoaded === IMAGE_COUNT) {
+          loadSteps.images = 1;
+          updateLoadProgress();
+        }
+      };
+
+      decorationImages.push(img);
+    }
+
+    // Khởi tạo particles
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      particles.push({
+        h: Math.random(),
+        angle: Math.random() * Math.PI * 2,
+        x: 0, y: 0, z: 0,
+        tx: 0, ty: 0, tz: 0,
+        type: "leaf",
+        deco: "leaf",
+        scale: 1,
+        targetScale: 1,
+        isZoomed: false,
+        size: IMAGE_SIZE_TREE,
+        leafIndex: Math.floor(Math.random() * LEAF_VARIANTS),
+        visible: true
+      });
+    }
+
+    function assignTreeParts() {
+      const starCount = 10;
+      const trunkCount = 60;
+      let imageIndex = 0;
+
+      particles.forEach((p, i) => {
+        if (i < starCount) {
+          p.type = "star";
+        } else if (i < starCount + trunkCount) {
+          p.type = "trunk";
+        } else {
+          p.type = "leaf";
+          const r = Math.random();
+
+          if (r < 0.08 && imageIndex < IMAGE_COUNT) {
+            p.deco = "image";
+            p.image = decorationImages[imageIndex++];
+            p.size = IMAGE_SIZE_TREE;
+            p.targetSize = IMAGE_SIZE_TREE;
+            p.zoomBaseSize = ZOOM_SIZE;
+          } else if (r < 0.12) p.deco = "ball";
+          else if (r < 0.16) p.deco = "light";
+          else if (r < 0.20) p.deco = "bell";
+          else if (r < 0.24) p.deco = "gift";
+          else p.deco = "leaf";
+        }
+      });
+    }
+    assignTreeParts();
+
+    for (let i = 0; i < SNOWFLAKE_COUNT; i++) {
+      snowflakes.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        radius: Math.random() * 2 + 1,
+        speedY: Math.random() * 1 + 0.5,
+        speedX: Math.random() * 0.6 - 0.3,
+        opacity: Math.random() * 0.5 + 0.5,
+        drift: Math.random() * Math.PI * 2
+      });
+    }
+
+    // ============ KHỞI TẠO KIM TUYẾN ============
+    function initTinselPoints() {
+      tinselPoints = [];
+      const cx = canvas.width / 2;
+      const topY = canvas.height * 0.15;
+      const height = canvas.height * 0.6;
+
+      for (let spiral = 0; spiral < TINSEL_SPIRALS; spiral++) {
+        const spiralOffset = (spiral / TINSEL_SPIRALS) * Math.PI * 2;
+        
+        for (let i = 0; i < TINSEL_POINTS; i++) {
+          const h = i / TINSEL_POINTS;
+          const radius = (h ** 1.2) * 170;
+          const angle = h * Math.PI * 10 + spiralOffset;
+          
+          const y = topY + h * height;
+          const x = cx + Math.cos(angle) * radius;
+          const z = Math.sin(angle) * radius;
+
+          tinselPoints.push({
+            baseX: x,
+            baseY: y,
+            baseZ: z,
+            baseAngle: angle,
+            baseRadius: radius,
+            baseH: h,
+            x: x,
+            y: y,
+            z: z,
+            spiral: spiral,
+            index: i,
+            normalizedH: h // Vị trí chuẩn hóa từ 0 (trên) đến 1 (dưới)
+          });
+        }
+      }
+    }
+    initTinselPoints();
+
+    // ============ XẾP CÂY THÔNG ============
+    function setTreeShape() {
+      isHeartMode = false;
+      isTransitioningToTree = true;
+      tinselRevealProgress = 0; // Reset để chạy lại hiệu ứng
+      treeFormationProgress = 0; // Reset tiến trình gộp cây
+      tinselCanStart = false; // Chưa cho phép kim tuyến vẽ
+
+      const cx = canvas.width / 2;
+      const topY = canvas.height * 0.15;
+      const height = canvas.height * 0.6;
+
+      particles.forEach(p => {
+        if (p.type === "star") {
+          p.radius = 8;
+          p.h = 0;
+        } else if (p.type === "trunk") {
+          p.radius = 12 + Math.random() * 8;
+          p.h = 0.75 + Math.random() * 0.25;
+        } else {
+          p.h = Math.random();
+          p.radius = (p.h ** 1.3) * 160;
+        }
+
+        const y = topY + p.h * height;
+        const x = cx + Math.cos(p.angle) * p.radius;
+        const z = Math.sin(p.angle) * p.radius;
+
+        p.tx = x;
+        p.ty = y;
+        p.tz = z;
+
+        p.baseAngle = p.angle;
+        p.baseRadius = p.radius;
+        p.baseY = y - canvas.height / 2;
+
+        if (p.deco === "image") {
+          p.targetSize = IMAGE_SIZE_TREE;
+        }
+      });
+
+      rotateY = 0;
+      rotateX = 0;
+      initTinselPoints();
+    }
+
+    function scatterParticles() {
+      isTransitioningToTree = false;
+      tinselRevealProgress = 0;
+      treeFormationProgress = 0;
+      tinselCanStart = false;
+      
+      const maxR = Math.max(canvas.width, canvas.height) * 0.35;
+
+      particles.forEach(p => {
+        const freeRadius = Math.random() * maxR;
+        const freeAngle = Math.random() * Math.PI * 2;
+
+        p.tx = canvas.width / 2 + Math.cos(freeAngle) * freeRadius;
+        p.ty = Math.random() * canvas.height;
+        p.tz = Math.sin(freeAngle) * freeRadius;
+
+        p.baseAngle = freeAngle;
+        p.baseRadius = freeRadius;
+        p.baseY = p.ty - canvas.height / 2;
+
+        if (p.deco === "image") {
+          p.targetSize = IMAGE_SIZE_SCATTER;
+        }
+      });
+    }
+
+    function setHeartShape() {
+      isHeartMode = true;
+      isTransitioningToTree = false;
+      tinselRevealProgress = 0;
+      treeFormationProgress = 0;
+      tinselCanStart = false;
+      
+      if (!flowerCacheCanvas) {
+        buildFlowerCache();
+      }
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      const scale = Math.min(canvas.width, canvas.height) * HEART_SCALE;
+
+      particles.forEach((p, i) => {
+        const t = (i + Math.random() * 0.5) / particles.length * Math.PI * 2;
+        const radiusJitter = 0.9 + Math.random() * 0.2;
+
+        const x = radiusJitter * 16 * Math.pow(Math.sin(t), 3);
+        const y = -radiusJitter * (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+
+        const depth = (Math.random() - 0.5) * scale * 0.3;
+
+        p.tx = cx + x * scale / 16;
+        p.ty = cy + y * scale / 16;
+        p.tz = depth;
+
+        p.baseAngle = t;
+        p.baseRadius = Math.sqrt(x * x + y * y) * scale / 16;
+        p.baseY = p.ty - cy;
+        p.heartX = x * scale / 16;
+        p.heartY = y * scale / 16;
+
+        if (p.deco === "image") {
+          p.targetSize = IMAGE_SIZE_HEART;
+        }
+      });
+
+      rotateY = 0;
+      rotateX = 0;
+    }
+
+    // ============ MEDIAPIPE ============
+    loadingText.textContent = 'Đang tải AI model...';
+
+    const hands = new Hands({
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.7
+    });
+
+    hands.onResults(onResults);
+
+    setTimeout(() => {
+      loadSteps.mediapipe = 1;
+      updateLoadProgress();
+      startCamera();
+    }, 1500);
+
+    function startCamera() {
+      loadingText.textContent = 'Đang khởi động camera...';
+
+      const camera = new Camera(video, {
+        onFrame: async () => {
+          await hands.send({ image: video });
+        },
+        width: 640,
+        height: 480
+      });
+
+      camera.start().then(() => {
+        loadSteps.camera = 1;
+        updateLoadProgress();
+      });
+    }
+
+    function onResults(results) {
+      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+        hoveredImage = null;
+        smoothHandPos = null;
+        lastHandPos = null;
+        return;
+      }
+
+      const landmarks = results.multiHandLandmarks[0];
+      const isFistGesture = isFist(landmarks);
+      const isPeaceGesture = isPeace(landmarks);
+      const isPinchGesture = isPinch(landmarks);
+
+      if (isFistGesture) {
+        if (currentMode !== "tree") {
+          setTreeShape();
+          currentMode = "tree";
+        }
+        hoveredImage = null;
+        smoothHandPos = null;
+        lastHandPos = null;
+        
+        // Reset zoom khi chuyển mode
+        particles.forEach(p => {
+          if (p.deco === "image") {
+            p.isZoomed = false;
+            p.targetScale = 1;
+          }
+        });
+      } else if (isPeaceGesture) {
+        if (currentMode !== "heart") {
+          setHeartShape();
+          currentMode = "heart";
+        }
+        smoothHandPos = null;
+        lastHandPos = null;
+        hoveredImage = null;
+        
+        // Reset zoom khi chuyển mode
+        particles.forEach(p => {
+          if (p.deco === "image") {
+            p.isZoomed = false;
+            p.targetScale = 1;
+          }
+        });
+      } else {
+        // CHỈ Ở TRẠNG THÁI MỞ TAY (SCATTER MODE) MỚI XỬ LÝ PINCH
+        if (currentMode !== "scatter") {
+          scatterParticles();
+          currentMode = "scatter";
+        }
+
+        const rawHandPos = getHandPosition(landmarks);
+
+        if (!smoothHandPos) {
+          smoothHandPos = rawHandPos;
+        } else {
+          smoothHandPos = {
+            x: smoothHandPos.x + (rawHandPos.x - smoothHandPos.x) * SMOOTH_FACTOR,
+            y: smoothHandPos.y + (rawHandPos.y - smoothHandPos.y) * SMOOTH_FACTOR
+          };
+        }
+
+        updateHoverImage(smoothHandPos);
+
+        // CHỈ XỬ LÝ PINCH KHI Ở SCATTER MODE
+        if (isPinchGesture) {
+          if (hoveredImage) {
+            zoomImage(hoveredImage);
+          }
+        } else {
+          particles.forEach(p => {
+            if (p.deco === "image") {
+              p.isZoomed = false;
+              p.targetScale = 1;
+            }
+          });
+        }
+
+        if (!isPinchGesture && lastHandPos) {
+          const dx = smoothHandPos.x - lastHandPos.x;
+          const dy = smoothHandPos.y - lastHandPos.y;
+
+          rotateY += dx * 0.003;
+          rotateX += dy * 0.002;
+          rotateX = Math.max(-Math.PI / 6, Math.min(Math.PI / 6, rotateX));
+
+          updateRotation();
+        }
+
+        lastHandPos = smoothHandPos;
+      }
+    }
+
+    function isFist(landmarks) {
+      const fingers = [[8, 6], [12, 10], [16, 14], [20, 18]];
+      return fingers.every(([tip, pip]) => landmarks[tip].y > landmarks[pip].y);
+    }
+
+    function isPeace(landmarks) {
+      const indexStraight = landmarks[8].y < landmarks[6].y - 0.03;
+      const middleStraight = landmarks[12].y < landmarks[10].y - 0.03;
+      const ringStraight = landmarks[16].y < landmarks[14].y;
+      const pinkyStraight = landmarks[20].y < landmarks[18].y;
+
+      const ringBent = !ringStraight || landmarks[16].y > landmarks[14].y + 0.01;
+      const pinkyBent = !pinkyStraight || landmarks[20].y > landmarks[18].y + 0.01;
+
+      return indexStraight && middleStraight && ringBent && pinkyBent;
+    }
+
+    function isPinch(landmarks) {
+      const thumb = landmarks[4];
+      const indexTip = landmarks[8];
+      const indexPip = landmarks[6];
+
+      const dx = thumb.x - indexTip.x;
+      const dy = thumb.y - indexTip.y;
+      const dz = thumb.z - indexTip.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+      const indexBent = indexTip.y > indexPip.y - 0.02;
+
+      return dist < 0.1 && indexBent;
+    }
+
+    function getHandPosition(landmarks) {
+      const wrist = landmarks[0];
+      return {
+        x: canvas.width - wrist.x * canvas.width,
+        y: wrist.y * canvas.height
+      };
+    }
+
+    function updateHoverImage(handPos) {
+      let nearest = null;
+      let minPriority = Infinity;
+
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+
+      particles.forEach(p => {
+        if (p.deco !== "image") return;
+
+        const perspective = 900 / (900 + p.tz);
+        const drawX = (p.tx - canvas.width / 2) * perspective + canvas.width / 2;
+        const drawY = (p.ty - canvas.height / 2) * perspective + canvas.height / 2;
+
+        const handDx = drawX - handPos.x;
+        const handDy = drawY - handPos.y;
+        const handDist = Math.sqrt(handDx * handDx + handDy * handDy);
+
+        const centerDx = drawX - centerX;
+        const centerDy = drawY - centerY;
+        const centerDist = Math.sqrt(centerDx * centerDx + centerDy * centerDy);
+
+        const priority = centerDist * 0.7 + handDist * 0.3;
+
+        if (priority < minPriority) {
+          minPriority = priority;
+          nearest = p;
+        }
+      });
+
+      hoveredImage = nearest;
+    }
+
+    function zoomImage(particle) {
+      particles.forEach(p => {
+        if (p.deco === "image" && p !== particle) {
+          p.isZoomed = false;
+          p.targetScale = 1;
+        }
+      });
+
+      particle.isZoomed = true;
+      particle.targetScale = 1.2;
+    }
+
+    function updateRotation() {
+      particles.forEach(p => {
+        if (!p.baseRadius) return;
+
+        const angle = p.baseAngle + rotateY;
+        const r = p.baseRadius;
+
+        const x = Math.cos(angle) * r;
+        const z = Math.sin(angle) * r;
+
+        const cosX = Math.cos(rotateX);
+        const sinX = Math.sin(rotateX);
+        const y2 = p.baseY * cosX - z * sinX;
+        const z2 = p.baseY * sinX + z * cosX;
+
+        p.tx = canvas.width / 2 + x;
+        p.ty = canvas.height / 2 + y2;
+        p.tz = z2;
+      });
+
+      // Update tinsel rotation
+      tinselPoints.forEach(tp => {
+        const angle = tp.baseAngle + rotateY;
+        const r = tp.baseRadius;
+
+        const x = Math.cos(angle) * r;
+        const z = Math.sin(angle) * r;
+
+        const cosX = Math.cos(rotateX);
+        const sinX = Math.sin(rotateX);
+        const baseY = tp.baseY - canvas.height / 2;
+        const y2 = baseY * cosX - z * sinX;
+        const z2 = baseY * sinX + z * cosX;
+
+        tp.x = canvas.width / 2 + x;
+        tp.y = canvas.height / 2 + y2;
+        tp.z = z2;
+      });
+    }
+
+    // ============ CẬP NHẬT & VẼ ============
+    function updateParticles() {
+      isHeartMode = currentMode === "heart";
+      const now = Date.now();
+
+      // Tính toán tiến trình gộp cây (kiểm tra particles đã về vị trí chưa)
+      if (isTransitioningToTree && !tinselCanStart) {
+        let totalDistance = 0;
+        let particleCount = 0;
+
+        particles.forEach(p => {
+          const dx = p.tx - p.x;
+          const dy = p.ty - p.y;
+          const dz = p.tz - p.z;
+          const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          totalDistance += distance;
+          particleCount++;
+        });
+
+        const avgDistance = totalDistance / particleCount;
+        
+        // Tính % hoàn thành (khoảng cách càng nhỏ = càng gần hoàn thành)
+        // Giả sử khoảng cách ban đầu trung bình là ~500px
+        const maxDistance = 500;
+        treeFormationProgress = 1 - Math.min(avgDistance / maxDistance, 1);
+
+        // Khi particles đã gộp 95% thì cho phép kim tuyến bắt đầu
+        if (treeFormationProgress >= 0.95) {
+          tinselCanStart = true;
+        }
+      }
+
+      // Cập nhật tiến trình hiện kim tuyến CHỈ KHI đã được phép
+      if (isTransitioningToTree && tinselCanStart && tinselRevealProgress < 1) {
+        tinselRevealProgress = Math.min(1, tinselRevealProgress + TINSEL_REVEAL_SPEED);
+      }
+
+      if (currentMode === "tree") {
+        autoRotateAngle += 0.01;
+
+        particles.forEach(p => {
+          if (!p.baseRadius) return;
+
+          const angle = p.baseAngle + autoRotateAngle;
+          const r = p.baseRadius;
+
+          const x = Math.cos(angle) * r;
+          const z = Math.sin(angle) * r;
+
+          const breathe = Math.sin(now / 2000 + p.angle * 10) * 3;
+
+          p.tx = canvas.width / 2 + x;
+          p.ty = p.baseY + canvas.height / 2 + breathe;
+          p.tz = z;
+        });
+
+        // Update tinsel for tree mode
+        tinselPoints.forEach(tp => {
+          const angle = tp.baseAngle + autoRotateAngle;
+          const r = tp.baseRadius;
+
+          const x = Math.cos(angle) * r;
+          const z = Math.sin(angle) * r;
+
+          tp.x = canvas.width / 2 + x;
+          tp.y = tp.baseY;
+          tp.z = z;
+        });
+
+      } else if (currentMode === "heart") {
+        heartBeatPhase += 0.2;
+        const heartBeat = 1 + Math.sin(heartBeatPhase) * 0.3;
+
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+
+        particles.forEach(p => {
+          if (!p.heartX) return;
+
+          p.tx = cx + p.heartX * heartBeat;
+          p.ty = cy + p.heartY * heartBeat;
+        });
+      }
+
+      const ease = currentMode === "tree" ? TRANSITION_SPEED : 0.05;
+
+      const margin = 100;
+      particles.forEach(p => {
+        p.x += (p.tx - p.x) * ease;
+        p.y += (p.ty - p.y) * ease;
+        p.z += (p.tz - p.z) * ease;
+
+        if (p.deco === "image") {
+          p.size += (p.targetSize - p.size) * 0.1;
+          p.scale += (p.targetScale - p.scale) * 0.15;
+        }
+
+        const perspective = 900 / (900 + p.z);
+        const drawX = (p.x - canvas.width / 2) * perspective + canvas.width / 2;
+        const drawY = (p.y - canvas.height / 2) * perspective + canvas.height / 2;
+
+        p.visible = drawX > -margin && drawX < canvas.width + margin &&
+          drawY > -margin && drawY < canvas.height + margin &&
+          p.z > -1000;
+      });
+
+      // Update tinsel animation
+      tinselAnimOffset += 0.05;
+    }
+
+    function drawTinsel(ctx) {
+      // Chỉ vẽ khi: (1) đang ở tree mode, (2) đã được phép bắt đầu, (3) có progress > 0
+      if (currentMode !== "tree" || !tinselCanStart || tinselRevealProgress <= 0) return;
+
+      tinselAnimOffset += 0.08;
+
+      for (let spiral = 0; spiral < TINSEL_SPIRALS; spiral++) {
+        const spiralPoints = tinselPoints.filter(tp => tp.spiral === spiral);
+        
+        // Vẽ dây kim tuyến với hiệu ứng từ trên xuống
+        for (let layer = 0; layer < 3; layer++) {
+          ctx.beginPath();
+          let firstPoint = true;
+          let lastValidX = 0;
+          let lastValidY = 0;
+
+          spiralPoints.forEach((tp, i) => {
+            // Chỉ vẽ những điểm đã được "reveal" (từ trên xuống)
+            if (tp.normalizedH > tinselRevealProgress) return;
+
+            const perspective = 900 / (900 + tp.z);
+            const drawX = (tp.x - canvas.width / 2) * perspective + canvas.width / 2;
+            const drawY = (tp.y - canvas.height / 2) * perspective + canvas.height / 2;
+
+            // Tính toán blur fade tại vị trí đang "vẽ" (từ trên xuống)
+            const distanceFromRevealPoint = tinselRevealProgress - tp.normalizedH;
+            const blurFadeDistance = 0.15; // Khoảng cách blur (15% chiều cao cây)
+            const blurAlpha = distanceFromRevealPoint < blurFadeDistance 
+              ? distanceFromRevealPoint / blurFadeDistance 
+              : 1;
+
+            if (firstPoint) {
+              ctx.moveTo(drawX, drawY);
+              firstPoint = false;
+            } else {
+              ctx.lineTo(drawX, drawY);
+            }
+
+            lastValidX = drawX;
+            lastValidY = drawY;
+          });
+
+          // Nếu không có điểm nào để vẽ thì bỏ qua
+          if (firstPoint) continue;
+
+          // Lớp 0: Glow lớn
+          if (layer === 0) {
+            ctx.strokeStyle = 'rgba(255, 215, 0, 0.3)';
+            ctx.lineWidth = TINSEL_WIDTH * 4;
+            ctx.shadowBlur = 30;
+            ctx.shadowColor = 'rgba(255, 215, 0, 0.8)';
+          }
+          // Lớp 1: Dây chính
+          else if (layer === 1) {
+            ctx.strokeStyle = 'rgba(255, 215, 0, 0.95)';
+            ctx.lineWidth = TINSEL_WIDTH;
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = 'rgba(255, 215, 0, 1)';
+          }
+          // Lớp 2: Highlight
+          else {
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.lineWidth = TINSEL_WIDTH * 0.4;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = 'rgba(255, 255, 255, 0.9)';
+          }
+
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.stroke();
+        }
+
+        // Reset shadow
+        ctx.shadowBlur = 0;
+
+        // Vẽ các điểm lấp lánh với hiệu ứng fade
+        spiralPoints.forEach((tp, i) => {
+          if (i % 2 !== 0) return;
+          if (tp.normalizedH > tinselRevealProgress) return;
+
+          const perspective = 900 / (900 + tp.z);
+          const drawX = (tp.x - canvas.width / 2) * perspective + canvas.width / 2;
+          const drawY = (tp.y - canvas.height / 2) * perspective + canvas.height / 2;
+
+          // Tính blur fade cho sparkle
+          const distanceFromRevealPoint = tinselRevealProgress - tp.normalizedH;
+          const blurFadeDistance = 0.15;
+          const sparkleAlpha = distanceFromRevealPoint < blurFadeDistance 
+            ? distanceFromRevealPoint / blurFadeDistance 
+            : 1;
+
+          const sparkle = Math.sin(tinselAnimOffset * 2 + i * 0.5) * 0.5 + 0.5;
+          const glowSize = (8 + sparkle * 10) * perspective;
+          
+          // Glow ngoài với fade
+          const gradient = ctx.createRadialGradient(drawX, drawY, 0, drawX, drawY, glowSize);
+          gradient.addColorStop(0, `rgba(255, 255, 255, ${sparkle * 0.9 * sparkleAlpha})`);
+          gradient.addColorStop(0.3, `rgba(255, 235, 150, ${sparkle * 0.7 * sparkleAlpha})`);
+          gradient.addColorStop(0.6, `rgba(255, 215, 0, ${sparkle * 0.4 * sparkleAlpha})`);
+          gradient.addColorStop(1, 'rgba(255, 215, 0, 0)');
+          
+          ctx.fillStyle = gradient;
+          ctx.beginPath();
+          ctx.arc(drawX, drawY, glowSize, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Điểm sáng trung tâm với fade
+          ctx.fillStyle = `rgba(255, 255, 255, ${(0.8 + sparkle * 0.2) * sparkleAlpha})`;
+          ctx.beginPath();
+          ctx.arc(drawX, drawY, 3 * perspective, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+    }
+
+    function drawParticles() {
+      const ctx = offscreenCtx;
+      const now = Date.now();
+
+      particles.forEach(p => {
+        if (!p.visible || (p.deco === "image" && p.isZoomed)) return;
+
+        const perspective = 900 / (900 + p.z);
+        const drawX = (p.x - canvas.width / 2) * perspective + canvas.width / 2;
+        const drawY = (p.y - canvas.height / 2) * perspective + canvas.height / 2;
+
+        if (p.type === "star") {
+          drawStarOptimized(ctx, drawX, drawY, 10 * perspective, perspective, now);
+        } else if (p.type === "trunk") {
+          const size = 3 * perspective;
+          ctx.fillStyle = `hsl(30, 50%, ${25 + p.h * 15}%)`;
+          ctx.fillRect(drawX - size / 2, drawY - size / 2, size, size * 1.5);
+        } else if (p.deco === "leaf") {
+          if (isHeartMode) {
+            drawFlowerCached(ctx, drawX, drawY, perspective, p);
+          } else {
+            drawCachedLeaf(ctx, drawX, drawY, perspective, p);
+          }
+        } else if (p.deco === "light") {
+          drawLightOptimized(ctx, drawX, drawY, perspective, p, now);
+        } else if (p.deco === "ball") {
+          drawOrnamentOptimized(ctx, drawX, drawY, perspective, p);
+        } else if (p.deco === "bell") {
+          drawBellOptimized(ctx, drawX, drawY, perspective, p, now);
+        } else if (p.deco === "gift") {
+          drawGiftOptimized(ctx, drawX, drawY, perspective, p, now);
+        } else if (p.deco === "image") {
+          drawImage(ctx, p, drawX, drawY, perspective, now);
+        }
+      });
+
+      particles.forEach(p => {
+        if (p.deco === "image" && p.isZoomed && p.visible) {
+          const perspective = 900 / (900 + p.z);
+          const drawX = (p.x - canvas.width / 2) * perspective + canvas.width / 2;
+          const drawY = (p.y - canvas.height / 2) * perspective + canvas.height / 2;
+          drawImage(ctx, p, drawX, drawY, perspective, now);
+        }
+      });
+    }
+
+    function drawStarOptimized(ctx, x, y, size, perspective, now) {
+      const spikes = 5;
+      const outerRadius = size;
+      const innerRadius = size * 0.4;
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(now / 1000);
+
+      ctx.fillStyle = 'rgba(255, 215, 0, 0.3)';
+      ctx.beginPath();
+      ctx.arc(0, 0, outerRadius * 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.beginPath();
+      for (let i = 0; i < spikes * 2; i++) {
+        const radius = i % 2 === 0 ? outerRadius : innerRadius;
+        const angle = (i * Math.PI) / spikes;
+        const px = Math.cos(angle) * radius;
+        const py = Math.sin(angle) * radius;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+
+      ctx.fillStyle = '#ffd700';
+      ctx.fill();
+
+      ctx.strokeStyle = '#fff4b0';
+      ctx.lineWidth = 1.5 * perspective;
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    function drawLightOptimized(ctx, x, y, perspective, p, now) {
+      const size = 5 * perspective;
+      const time = now / 1000;
+      const hue = (time * 50 + p.angle * 360) % 360;
+      const twinkle = 0.7 + Math.sin(time * 3 + p.angle * 100) * 0.3;
+
+      ctx.fillStyle = `hsla(${hue}, 100%, 60%, ${0.3 * twinkle})`;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = `hsl(${hue}, 100%, 60%)`;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 1.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = `rgba(255, 255, 255, ${0.8 * twinkle})`;
+      ctx.beginPath();
+      ctx.arc(x - size * 0.4, y - size * 0.4, size * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawOrnamentOptimized(ctx, x, y, perspective, p) {
+      const size = 7 * perspective;
+      const colorSets = [
+        { base: '#c41e3a' },
+        { base: '#ffd700' },
+        { base: '#0066cc' },
+        { base: '#ff69b4' }
+      ];
+      const colorIndex = Math.abs(Math.floor(p.angle * 10)) % 4;
+      const color = colorSets[colorIndex].base;
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+      ctx.beginPath();
+      ctx.ellipse(x + 3 * perspective, y + 5 * perspective, size * 0.8, size * 0.3, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.beginPath();
+      ctx.arc(x - size * 0.35, y - size * 0.35, size * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawBellOptimized(ctx, x, y, perspective, p, now) {
+      const size = 7 * perspective;
+
+      ctx.save();
+      ctx.translate(x, y);
+
+      ctx.fillStyle = '#ffd700';
+      ctx.beginPath();
+      ctx.moveTo(0, -size * 0.8);
+      ctx.quadraticCurveTo(-size * 0.6, -size * 0.3, -size * 0.7, size * 0.5);
+      ctx.lineTo(-size * 0.6, size * 0.8);
+      ctx.quadraticCurveTo(0, size * 0.9, size * 0.6, size * 0.8);
+      ctx.lineTo(size * 0.7, size * 0.5);
+      ctx.quadraticCurveTo(size * 0.6, -size * 0.3, 0, -size * 0.8);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawGiftOptimized(ctx, x, y, perspective, p, now) {
+      const size = 7 * perspective;
+      const colors = ['#c41e3a', '#0066cc', '#9b59b6', '#e67e22'];
+      const colorIndex = Math.abs(Math.floor(p.angle * 10)) % 4;
+
+      ctx.save();
+      ctx.translate(x, y);
+
+      ctx.fillStyle = colors[colorIndex];
+      ctx.fillRect(-size * 0.5, -size * 0.4, size, size * 0.8);
+
+      ctx.fillStyle = '#ffd700';
+      ctx.fillRect(-size * 0.5, -size * 0.12, size, size * 0.24);
+      ctx.fillRect(-size * 0.1, -size * 0.4, size * 0.2, size * 0.8);
+
+      ctx.restore();
+    }
+
+    function buildLeafCache() {
+      for (let i = 0; i < LEAF_VARIANTS; i++) {
+        const off = document.createElement("canvas");
+        off.width = LEAF_CANVAS_SIZE;
+        off.height = LEAF_CANVAS_SIZE;
+        const c = off.getContext("2d");
+
+        c.translate(LEAF_CANVAS_SIZE / 2, LEAF_CANVAS_SIZE / 2);
+
+        const clusterSize = 5;
+        const needleLength = 20;
+        const needleWidth = 6;
+        const baseAngle = Math.random() * Math.PI * 2;
+
+        for (let j = 0; j < clusterSize; j++) {
+          const angle = baseAngle + (j * Math.PI * 2) / clusterSize;
+          c.save();
+          c.rotate(angle);
+
+          c.fillStyle = "#3f6f3f";
+          c.beginPath();
+          c.moveTo(0, 0);
+          c.lineTo(needleLength, -needleWidth / 2);
+          c.lineTo(needleLength, needleWidth / 2);
+          c.closePath();
+          c.fill();
+
+          c.restore();
+        }
+
+        LEAF_CACHE.push(off);
+      }
+    }
+
+    buildLeafCache();
+
+    function drawCachedLeaf(ctx, x, y, perspective, p) {
+      const img = LEAF_CACHE[p.leafIndex];
+      const size = 14 * perspective;
+
+      ctx.drawImage(
+        img,
+        x - size / 2,
+        y - size / 2,
+        size,
+        size
+      );
+    }
+
+    loadingText.textContent = 'Đang tạo cache...';
+    setTimeout(() => {
+      buildFlowerCache();
+      loadSteps.cache = 1;
+      updateLoadProgress();
+    }, 100);
+
+    function drawFlowerCached(ctx, x, y, perspective, p) {
+      const size = 8 * perspective;
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(p.angle || 0);
+
+      ctx.drawImage(
+        flowerCacheCanvas,
+        -size,
+        -size,
+        size * 2,
+        size * 2
+      );
+
+      ctx.restore();
+    }
+
+    function buildFlowerCache() {
+      const size = 40;
+      const c = document.createElement("canvas");
+      c.width = c.height = size * 2;
+      const cctx = c.getContext("2d");
+
+      cctx.translate(size, size);
+
+      cctx.fillStyle = "rgba(255,182,193,0.9)";
+
+      const petalCount = 5;
+      for (let i = 0; i < petalCount; i++) {
+        cctx.save();
+        cctx.rotate((Math.PI * 2 * i) / petalCount);
+        cctx.beginPath();
+        cctx.ellipse(0, -size * 0.6, size * 0.35, size * 0.7, 0, 0, Math.PI * 2);
+        cctx.fill();
+        cctx.restore();
+      }
+
+      cctx.fillStyle = "rgba(255,215,0,0.95)";
+      cctx.beginPath();
+      cctx.arc(0, 0, size * 0.25, 0, Math.PI * 2);
+      cctx.fill();
+
+      flowerCacheCanvas = c;
+    }
+
+    function drawImage(ctx, p, x, y, perspective, now) {
+      const img = p.image;
+      if (!img || !img.complete) return;
+
+      ctx.save();
+      const baseSize = p.size * perspective * p.scale;
+
+      if (p === hoveredImage && !p.isZoomed) {
+        const pulse = 1 + Math.sin(now / 220) * 0.1;
+        const hoverSize = baseSize * pulse;
+
+        ctx.drawImage(
+          img,
+          x - hoverSize / 2,
+          y - hoverSize / 2,
+          hoverSize,
+          hoverSize
+        );
+
+        ctx.strokeStyle = "rgba(255,215,0,0.8)";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(
+          x - hoverSize / 2,
+          y - hoverSize / 2,
+          hoverSize,
+          hoverSize
+        );
+      } else if (p.isZoomed) {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const aspect = img.naturalWidth / img.naturalHeight;
+        let drawW, drawH;
+        const maxSize = p.zoomBaseSize * p.scale;
+
+        if (aspect >= 1) {
+          drawW = maxSize;
+          drawH = maxSize / aspect;
+        } else {
+          drawH = maxSize;
+          drawW = maxSize * aspect;
+        }
+
+        const drawX = canvas.width / 2;
+        const drawY = canvas.height / 2;
+
+        ctx.drawImage(
+          img,
+          drawX - drawW / 2,
+          drawY - drawH / 2,
+          drawW,
+          drawH
+        );
+
+        ctx.strokeStyle = "rgba(255, 215, 0, 0.6)";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(
+          drawX - drawW / 2,
+          drawY - drawH / 2,
+          drawW,
+          drawH
+        );
+      } else {
+        ctx.drawImage(
+          img,
+          x - baseSize / 2,
+          y - baseSize / 2,
+          baseSize,
+          baseSize
+        );
+      }
+
+      ctx.restore();
+    }
+
+    function updateSnowflakes() {
+      snowflakes.forEach(s => {
+        s.y += s.speedY;
+        s.x += s.speedX + Math.sin(s.drift) * 0.5;
+        s.drift += 0.01;
+
+        if (s.y > canvas.height) {
+          s.y = -10;
+          s.x = Math.random() * canvas.width;
+        }
+      });
+    }
+
+    function drawSnowflakes(ctx) {
+      ctx.fillStyle = "white";
+      snowflakes.forEach(s => {
+        ctx.globalAlpha = s.opacity;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    function updateDebug() {
+      if (!smoothHandPos && currentMode !== "heart") {
+        debug.innerHTML = `
+          <div style="background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px;">
+            🎄 <b>Đưa tay vào camera</b><br>
+            ✊ Nắm tay = Cây thông<br>
+            ✌️ 2 Ngón = Trái tim ❤️<br>
+            ✋ Mở tay = Điều khiển<br>
+            🤏 Pinch = Zoom ảnh
+          </div>
+        `;
+        return;
+      }
+
+      let text = `<div style="background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px;">`;
+
+      if (currentMode === "tree") {
+        text += "✊ <b>NẮM TAY</b> - Cây thông";
+      } else if (currentMode === "heart") {
+        text += "✌️ <b>2 NGÓN</b> - Trái tim ❤️";
+      } else {
+        text += "✋ <b>MỞ TAY</b> - Điều khiển";
+        text += hoveredImage ? "<br>🎯 <b style='color: gold;'>HOVER ẢNH</b>" : "";
+        text += particles.some(p => p.isZoomed) ? "<br>📸 <b style='color: lime;'>ĐANG ZOOM</b>" : "";
+      }
+
+      text += "</div>";
+      debug.innerHTML = text;
+    }
+
+    function animate() {
+      offscreenCtx.fillStyle = 'black';
+      offscreenCtx.fillRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+
+      updateSnowflakes();
+      drawSnowflakes(offscreenCtx);
+
+      updateParticles();
+      drawParticles();
+      drawTinsel(offscreenCtx);
+
+      offscreenCtx.save();
+      offscreenCtx.globalAlpha = 0.6;
+      offscreenCtx.drawImage(video, canvas.width - 200, canvas.height - 140, 180, 120);
+
+      offscreenCtx.strokeStyle = 'rgba(255, 215, 0, 0.6)';
+      offscreenCtx.lineWidth = 3;
+      offscreenCtx.strokeRect(canvas.width - 200, canvas.height - 140, 180, 120);
+      offscreenCtx.restore();
+
+      ctx.drawImage(offscreenCanvas, 0, 0);
+
+      updateDebug();
+
+      requestAnimationFrame(animate);
+    }
+
+    setTreeShape();
+    animate();
+  </script>
+</body>
+
+</html>
