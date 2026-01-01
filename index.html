@@ -110,12 +110,9 @@
 
   <style>
     @keyframes bounce {
-
-      0%,
-      100% {
+      0%, 100% {
         transform: translateY(0);
       }
-
       50% {
         transform: translateY(-20px);
       }
@@ -153,7 +150,7 @@
     const TINSEL_POINTS = 250;
     const TINSEL_SPIRALS = 1;
     const TINSEL_WIDTH = 3;
-    const TINSEL_REVEAL_SPEED = 0.001; // Tốc độ hiện kim tuyến từ trên xuống
+    const TINSEL_REVEAL_SPEED = 0.01; // Tốc độ hiện kim tuyến từ trên xuống
 
     // ============ GRADIENT CACHE ============
     const gradientCache = new Map();
@@ -321,12 +318,12 @@
 
       for (let spiral = 0; spiral < TINSEL_SPIRALS; spiral++) {
         const spiralOffset = (spiral / TINSEL_SPIRALS) * Math.PI * 2;
-
+        
         for (let i = 0; i < TINSEL_POINTS; i++) {
           const h = i / TINSEL_POINTS;
           const radius = (h ** 1.2) * 170;
           const angle = h * Math.PI * 10 + spiralOffset;
-
+          
           const y = topY + h * height;
           const x = cx + Math.cos(angle) * radius;
           const z = Math.sin(angle) * radius;
@@ -401,7 +398,7 @@
       tinselRevealProgress = 0;
       treeFormationProgress = 0;
       tinselCanStart = false;
-
+      
       const maxR = Math.max(canvas.width, canvas.height) * 0.35;
 
       particles.forEach(p => {
@@ -428,7 +425,7 @@
       tinselRevealProgress = 0;
       treeFormationProgress = 0;
       tinselCanStart = false;
-
+      
       if (!flowerCacheCanvas) {
         buildFlowerCache();
       }
@@ -486,38 +483,22 @@
       startCamera();
     }, 1500);
 
-    async function startCamera() {
+    function startCamera() {
       loadingText.textContent = 'Đang khởi động camera...';
 
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'user', // camera trước
-            width: { ideal: 640 },
-            height: { ideal: 480 }
-          }
-        });
+      const camera = new Camera(video, {
+        onFrame: async () => {
+          await hands.send({ image: video });
+        },
+        width: 640,
+        height: 480
+      });
 
-        video.srcObject = stream;
-        await video.play();
-
+      camera.start().then(() => {
         loadSteps.camera = 1;
         updateLoadProgress();
-
-        async function detect() {
-          if (video.readyState >= 2) {
-            await hands.send({ image: video });
-          }
-          requestAnimationFrame(detect);
-        }
-
-        detect();
-      } catch (err) {
-        loadingText.textContent = '❌ Không mở được camera';
-        console.error(err);
-      }
+      });
     }
-
 
     function onResults(results) {
       if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
@@ -540,7 +521,7 @@
         hoveredImage = null;
         smoothHandPos = null;
         lastHandPos = null;
-
+        
         // Reset zoom khi chuyển mode
         particles.forEach(p => {
           if (p.deco === "image") {
@@ -556,7 +537,7 @@
         smoothHandPos = null;
         lastHandPos = null;
         hoveredImage = null;
-
+        
         // Reset zoom khi chuyển mode
         particles.forEach(p => {
           if (p.deco === "image") {
@@ -758,7 +739,7 @@
         });
 
         const avgDistance = totalDistance / particleCount;
-
+        
         // Tính % hoàn thành (khoảng cách càng nhỏ = càng gần hoàn thành)
         // Giả sử khoảng cách ban đầu trung bình là ~500px
         const maxDistance = 500;
@@ -856,7 +837,7 @@
 
       for (let spiral = 0; spiral < TINSEL_SPIRALS; spiral++) {
         const spiralPoints = tinselPoints.filter(tp => tp.spiral === spiral);
-
+        
         // Vẽ dây kim tuyến với hiệu ứng từ trên xuống
         for (let layer = 0; layer < 3; layer++) {
           ctx.beginPath();
@@ -875,8 +856,8 @@
             // Tính toán blur fade tại vị trí đang "vẽ" (từ trên xuống)
             const distanceFromRevealPoint = tinselRevealProgress - tp.normalizedH;
             const blurFadeDistance = 0.15; // Khoảng cách blur (15% chiều cao cây)
-            const blurAlpha = distanceFromRevealPoint < blurFadeDistance
-              ? distanceFromRevealPoint / blurFadeDistance
+            const blurAlpha = distanceFromRevealPoint < blurFadeDistance 
+              ? distanceFromRevealPoint / blurFadeDistance 
               : 1;
 
             if (firstPoint) {
@@ -935,20 +916,20 @@
           // Tính blur fade cho sparkle
           const distanceFromRevealPoint = tinselRevealProgress - tp.normalizedH;
           const blurFadeDistance = 0.15;
-          const sparkleAlpha = distanceFromRevealPoint < blurFadeDistance
-            ? distanceFromRevealPoint / blurFadeDistance
+          const sparkleAlpha = distanceFromRevealPoint < blurFadeDistance 
+            ? distanceFromRevealPoint / blurFadeDistance 
             : 1;
 
           const sparkle = Math.sin(tinselAnimOffset * 2 + i * 0.5) * 0.5 + 0.5;
           const glowSize = (8 + sparkle * 10) * perspective;
-
+          
           // Glow ngoài với fade
           const gradient = ctx.createRadialGradient(drawX, drawY, 0, drawX, drawY, glowSize);
           gradient.addColorStop(0, `rgba(255, 255, 255, ${sparkle * 0.9 * sparkleAlpha})`);
           gradient.addColorStop(0.3, `rgba(255, 235, 150, ${sparkle * 0.7 * sparkleAlpha})`);
           gradient.addColorStop(0.6, `rgba(255, 215, 0, ${sparkle * 0.4 * sparkleAlpha})`);
           gradient.addColorStop(1, 'rgba(255, 215, 0, 0)');
-
+          
           ctx.fillStyle = gradient;
           ctx.beginPath();
           ctx.arc(drawX, drawY, glowSize, 0, Math.PI * 2);
